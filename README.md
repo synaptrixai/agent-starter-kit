@@ -1,35 +1,89 @@
 # Spilli Agent Starter Kit
 
-This directory is a minimal installable external agent for the Spilli VS Code extension. Use it as a template when creating a new agent repo.
+This repository is a minimal installable external agent for the Spilli VS Code extension. Use it as a template when you want to build an agent that owns its own loop policy while using the extension for model transport, workspace tools, IDE-aware tools, and transcript-visible events.
 
-The starter shows:
-- A valid `spilli-agent.json` manifest.
-- A CommonJS `agentLoop.js` runtime entrypoint.
-- Local tools exposed through `localToolEntries`.
-- A simple multi-iteration loop that calls the selected model, asks the extension's shared parser for tool calls, executes tools, and returns a final message.
-- A dependency-free smoke test.
-- `AGENTS.md` instructions for coding agents that need to create compatible Spilli agents.
+The starter includes:
 
-## Files
+- `spilli-agent.json`, the install manifest.
+- `agentLoop.js`, a CommonJS runtime entrypoint.
+- `tools/starterTools.js`, sample agent-specific local tools.
+- `tests/smoke.test.js`, dependency-free compatibility tests.
+- `AGENTS.md`, instructions you can hand to a coding agent that is creating or modifying a Spilli-compatible agent repo.
 
-- `spilli-agent.json`: extension manifest.
-- `agentLoop.js`: runtime entrypoint loaded by the extension worker.
-- `tools/starterTools.js`: sample local tool module.
-- `tests/smoke.test.js`: Node test covering manifest shape, runtime loading, model parsing, and tool execution.
-- `AGENTS.md`: coding-agent instructions with the manifest, runtime, parser, tool, hook, and packaging contracts.
-- `package.json`: convenience scripts.
+## Quick Start
 
-If you are asking a coding agent to create a new Spilli-compatible agent, point it at `AGENTS.md` first.
+From this directory:
 
-## Runtime Contract
+```sh
+npm test
+npm run smoke
+```
 
-The extension loads the file referenced by `agent.loopEntry` and expects one of:
+To create your own agent:
+
+1. Copy this starter into a new Git repo.
+2. Update `agent.id`, `agent.name`, and `agent.description` in `spilli-agent.json`.
+3. Customize the prompt and loop policy in `agentLoop.js`.
+4. Add agent-specific tools under `tools/` only when the extension's shared tools are not enough.
+5. List each local tool module in `localToolEntries`.
+6. Run `npm test` in a clean clone before installing the repo in Spilli.
+
+## Required Files
+
+Every installable agent repo needs:
+
+- `spilli-agent.json` at the repo root.
+- The file referenced by `agent.loopEntry`.
+- Every file required by the runtime entrypoint.
+- Every file listed in `localToolEntries`.
+
+If you compile from TypeScript or bundle into `dist/`, commit the generated runtime files that the manifest points at. The extension installs from the repo checkout; it does not run your build step before loading the agent.
+
+## Manifest
+
+`spilli-agent.json` uses schema version `1`:
+
+```json
+{
+  "schemaVersion": 1,
+  "runtimeApiVersion": 1,
+  "agent": {
+    "id": "spilli-agent-starter",
+    "name": "Spilli Agent Starter",
+    "apiVersion": 1,
+    "loopEntry": "agentLoop.js",
+    "description": "Minimal external agent runtime template for the Spilli VS Code extension."
+  },
+  "localToolEntries": [
+    "tools/starterTools.js"
+  ],
+  "toolDeps": []
+}
+```
+
+Rules:
+
+- `schemaVersion`, `runtimeApiVersion`, and `agent.apiVersion` must be `1`.
+- `agent.id` must be stable and must not contain `/`, `\`, or `..`.
+- `agent.loopEntry` must be a repo-relative path to an existing JavaScript module.
+- `agent.description`, `agent.iconName`, and `agent.iconPath` are optional display fields.
+- `agent.iconPath`, when present, must be a repo-relative path to an existing file.
+- `localToolEntries` is optional and should contain only agent-specific tool modules.
+- `toolDeps` is reserved for shared tool dependency repos; leave it empty unless you intentionally publish tools that way.
+
+## Runtime Entrypoint
+
+The file referenced by `agent.loopEntry` should export one of these CommonJS shapes:
 
 ```js
 exports.createAgentRuntime = function createAgentRuntime(context) {
   return {
-    async runTurn(request, hooks) {
-      // ...
+    async runTurn(request, hooks = {}) {
+      return {
+        raw: 'final raw text',
+        content: 'final display text',
+        isHarmony: false
+      };
     }
   };
 };
@@ -38,107 +92,215 @@ exports.createAgentRuntime = function createAgentRuntime(context) {
 or:
 
 ```js
-exports.runTurn = async function runTurn(request, hooks, context) {
-  // ...
+exports.runTurn = async function runTurn(request, hooks = {}, context) {
+  return {
+    raw: 'final raw text',
+    content: 'final display text',
+    isHarmony: false
+  };
 };
 ```
 
 The starter uses `createAgentRuntime(context)`.
 
-## Context APIs
+## Request Shape
 
-External agents receive:
-
-- `context.runModel({ prompt, query, model, scope, team })`
-- `context.parseToolCalls({ raw, content, model })`
-- `context.executeToolCall({ toolName, callId, args })`
-- `context.reportStatus({ phase, message, ... })`
-
-`runModel()` is the transport boundary. It returns raw model text plus display-rendered content:
+`runTurn(request, hooks)` receives the user's task and selected routing information:
 
 ```js
 {
-  raw: 'exact model payload',
-  content: 'display-rendered text',
+  model: 'selected-model-id',
+  scope: 'public',
+  team: undefined,
+  query: 'user message',
+  conversationId: 'conversation id',
+  conversationSummary: 'optional summary',
+  recentMessages: [
+    { role: 'user', content: '...' },
+    { role: 'assistant', content: '...' }
+  ],
+  content: [
+    { type: 'text', text: 'user message' }
+  ],
+  hostEnvironment: {
+    platform: 'linux',
+    arch: 'x64',
+    preferredShell: 'bash',
+    shellWrapperHint: '...',
+    isWindows: false
+  },
+  iterationSettings: {
+    maxIterations: 4,
+    ignoreMaxIterations: false
+  }
+}
+```
+
+Treat optional fields as optional. In particular, keep your agent compatible when `recentMessages`, `content`, `hostEnvironment`, or `iterationSettings` are missing.
+
+`iterationSettings.maxIterations` is the extension-configured turn boundary. If `iterationSettings.ignoreMaxIterations === true`, the user has enabled unlimited turns, so do not apply a hidden local cap.
+
+## Runtime Context
+
+External agents receive a context object with these public helpers:
+
+```js
+await context.runModel({
+  prompt,
+  query,
+  content,
+  model: request.model,
+  scope: request.scope,
+  team: request.team
+});
+```
+
+Returns:
+
+```js
+{
+  raw: 'exact model response text',
+  content: 'display-rendered response text',
   isHarmony: false
 }
 ```
 
-The agent decides whether to execute tools. The extension does not automatically execute parsed tool calls for external agents.
+`runModel()` does not execute tools and does not return parsed tool calls. Your agent decides what the model output means.
 
-The extension passes iteration settings to the agent request. If `request.iterationSettings.ignoreMaxIterations` is true, the user enabled unlimited turns, so the starter loop does not apply its default local cap. If it is false or missing, the starter returns control after `request.iterationSettings.maxIterations` or a conservative default so the extension can ask the user whether to continue.
+```js
+await context.parseToolCalls({
+  raw: modelRun.raw,
+  content: modelRun.content,
+  model: request.model
+});
+```
 
-Agents should also emit background status updates with `hooks.onStatus(...)` while planning, waiting for model inference, parsing output, running tools, or finalizing. The extension renders these as a compact status chip on the active assistant bubble and records them in transcripts as `agent.status`.
+Returns normalized tool-call envelopes:
 
-## Tool-Call Strategy
+```js
+[
+  {
+    toolName: 'workspace.readFile',
+    callId: 'call1',
+    args: { path: 'README.md' }
+  }
+]
+```
 
-Different models may emit different shapes:
+`parseToolCalls()` is only a parser. The agent still decides which calls to execute.
 
-- Harmony tool calls.
-- Direct JSON envelopes like `{"toolName":"starter.projectMap","callId":"call1","args":{"path":".","maxDepth":2}}`.
-- `{ "toolCalls": [...] }`.
-- Markdown JSON blocks.
-- OpenAI Responses-style function calls.
-- Plain final text.
+```js
+await context.executeToolCall({
+  toolName: 'workspace.readFile',
+  callId: 'call1',
+  args: { path: 'README.md' }
+});
+```
 
-Prefer `context.parseToolCalls({ raw, content, model })` so agents share the extension parser. Keep a small local fallback for older extension versions, as shown in `agentLoop.js`.
+Returns a normalized tool result:
+
+```js
+{
+  callId: 'call1',
+  toolName: 'workspace.readFile',
+  ok: true,
+  result: 'tool result payload',
+  error: undefined
+}
+```
+
+Use `context.reportStatus(status)` from helpers that do not receive `hooks`. Inside `runTurn`, prefer `hooks.onStatus(status)`.
+
+## Hooks And Events
+
+Use hooks to keep the Spilli UI and transcripts aligned with what your loop is doing:
+
+- `hooks.onStatus(status)` for planning, waiting, model, tool, working, finalizing, done, or error updates.
+- `hooks.onModelRequest(payload)` before model calls when you want observability.
+- `hooks.onModelResponse(payload)` after model calls.
+- `hooks.onToolCall(call)` before executing a tool.
+- `hooks.onToolResult(result)` after a tool returns.
+- `hooks.onChunk(chunk)` if your runtime streams user-visible text.
+- `hooks.onEditProposal(proposal)` if your runtime creates reviewable edit proposals.
+
+Status shape:
+
+```js
+hooks.onStatus?.({
+  phase: 'tool',
+  message: 'Running tool.',
+  detail: 'Reading README.md',
+  iteration: 2,
+  toolName: 'workspace.readFile',
+  progress: 0.5,
+  metadata: { source: 'agent-loop' }
+});
+```
+
+Supported phases are `planning`, `waiting`, `model`, `tool`, `working`, `finalizing`, `done`, and `error`.
 
 ## Local Tools
 
-This starter includes read-only local tools that are useful enough to run in real agent experiments:
+Local tools are for capabilities specific to your agent. The extension may also provide shared tools such as workspace, IDE, and container-oriented tools depending on the user's environment and permissions. Do not duplicate shared tools in `localToolEntries`.
 
-- `starter.projectMap`: returns a compact tree under a workspace path.
-- `starter.readTextSlice`: reads a bounded line-numbered slice of a text file.
-- `starter.findTodos`: scans text files for `TODO`, `FIXME`, `HACK`, and `NOTE`.
-
-Each path in `localToolEntries` must export either `default` or `toolModule` with this shape:
+Each local tool module should export a tool module directly, as `toolModule`, or as `default`:
 
 ```js
-module.exports.toolModule = {
-  id: 'starter-tools',
+'use strict';
+
+const toolModule = {
+  id: 'my-agent-tools',
   tools: [
     {
       contract: {
-        name: 'starter.projectMap',
-        description: 'Return a compact tree of workspace files and directories under a path.',
-        args: '{"path"?: string, "maxDepth"?: number, "maxEntries"?: number}',
-        returns: '{"root": string, "entries": Array<{path, type, size?}>, "truncated": boolean}',
-        includeByDefault: true
+        name: 'myAgent.inspect',
+        description: 'Inspect something specific to this agent.',
+        args: '{"path": string}',
+        returns: '{"ok": boolean, "summary": string}',
+        includeByDefault: true,
+        keywords: ['inspect']
       },
       createTool: context => ({
         async invoke(input) {
-          // Resolve paths inside context.workspaceRoot and return JSON text.
+          return JSON.stringify({ ok: true, summary: String(input.path || '') });
         }
       })
     }
   ]
 };
+
+module.exports = toolModule;
+module.exports.toolModule = toolModule;
+module.exports.default = toolModule;
 ```
 
-The extension also provides its built-in tools, such as workspace, IDE, and container tools, depending on configuration and permissions.
+Tool names should be namespaced, for example `starter.projectMap` or `myAgent.inspect`.
 
-## Try The Starter
+## Loop Ownership
 
-From this directory:
+For external agents, the extension provides model access and tool execution. Your runtime owns the loop:
 
-```sh
-npm test
-node -e "require('./agentLoop.js'); console.log('runtime-load-ok')"
-```
+1. Build the system prompt and model query.
+2. Call `context.runModel()`.
+3. Decide whether the model returned final text or tool calls.
+4. Prefer `context.parseToolCalls()` for shared parsing.
+5. Execute selected calls with `context.executeToolCall()`.
+6. Feed tool results into the next model turn.
+7. Respect `request.iterationSettings`.
+8. Return `{ raw, content, isHarmony }` when the turn is complete.
 
-To publish your own agent:
+## Publishing Checklist
 
-1. Copy this directory into a new Git repo.
-2. Change `agent.id`, `agent.name`, and `agent.description` in `spilli-agent.json`.
-3. Customize `buildSystemPrompt()` and `buildUserQuery()` in `agentLoop.js`.
-4. Add local tools under `tools/` and list them in `localToolEntries`.
-5. Run `npm test`.
-6. Install the repo through the Spilli extension agent installer.
+Before sharing an agent repo:
 
-## Packaging Checklist
+- Run `npm test`.
+- Run `npm run smoke` or `node -e "require('./agentLoop.js'); console.log('runtime-load-ok')"`.
+- Fresh clone the repo and repeat the tests.
+- Confirm `spilli-agent.json` exists at repo root.
+- Confirm `agent.loopEntry` exists in the fresh clone.
+- Confirm every `localToolEntries` path exists in the fresh clone.
+- Confirm generated runtime dependencies are committed if the manifest points to generated output.
 
-- `spilli-agent.json` exists at repo root.
-- `agent.loopEntry` exists in a clean clone.
-- Every `localToolEntries` path exists in a clean clone.
-- Runtime entrypoint loads with `node -e "require('./agentLoop.js')"`.
-- Tests pass with `npm test`.
+## Common Failure
+
+If installation or startup fails with a missing module error, the repo usually published an entrypoint without publishing one of the files it requires. Commit the missing file, then rerun the clean-clone smoke test.

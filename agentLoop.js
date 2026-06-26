@@ -127,7 +127,7 @@ function buildSystemPrompt(request) {
     '- workspace.searchText',
     '- workspace.readFile',
     '- workspace.proposeEdit',
-    '- container.runCommand',
+    '- container.exec',
     '',
     `Host platform: ${host.platform || 'unknown'}`,
     `Preferred shell: ${host.preferredShell || 'unknown'}`,

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "runtimeApiVersion": 1,
+  "agent": {
+    "id": "spilli-agent-starter",
+    "name": "Spilli Agent Starter",
+    "apiVersion": 1,
+    "loopEntry": "agentLoop.js",
+    "description": "Minimal external agent runtime template for the Spilli VS Code extension."
+  },
+  "localToolEntries": [
+    "tools/starterTools.js"
+  ],
+  "toolDeps": []
+}
